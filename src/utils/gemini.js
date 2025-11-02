@@ -399,7 +399,6 @@ async function startMacOSAudioCapture(geminiSessionRef) {
 
     const { app } = require('electron');
     const path = require('path');
-    const fs = require('fs');
 
     let systemAudioPath;
     if (app.isPackaged) {
@@ -409,22 +408,6 @@ async function startMacOSAudioCapture(geminiSessionRef) {
     }
 
     console.log('SystemAudioDump path:', systemAudioPath);
-
-    // Check if binary exists
-    if (!fs.existsSync(systemAudioPath)) {
-        const errorMsg = `SystemAudioDump binary not found at: ${systemAudioPath}`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
-    }
-
-    // Check if binary is executable
-    try {
-        fs.accessSync(systemAudioPath, fs.constants.X_OK);
-    } catch (err) {
-        const errorMsg = `SystemAudioDump binary is not executable: ${systemAudioPath}`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
-    }
 
     // Spawn SystemAudioDump with stealth options
     const spawnOptions = {
@@ -443,18 +426,11 @@ async function startMacOSAudioCapture(geminiSessionRef) {
         spawnOptions.windowsHide = false;
     }
 
-    try {
-        systemAudioProc = spawn(systemAudioPath, [], spawnOptions);
-    } catch (err) {
-        const errorMsg = `Failed to spawn SystemAudioDump: ${err.message}. Make sure Screen Recording permission is granted in System Preferences > Security & Privacy > Privacy > Screen Recording.`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
-    }
+    systemAudioProc = spawn(systemAudioPath, [], spawnOptions);
 
-    if (!systemAudioProc || !systemAudioProc.pid) {
-        const errorMsg = 'Failed to start SystemAudioDump: No PID assigned. Check Screen Recording permissions.';
-        console.error(errorMsg);
-        throw new Error(errorMsg);
+    if (!systemAudioProc.pid) {
+        console.error('Failed to start SystemAudioDump');
+        return false;
     }
 
     console.log('SystemAudioDump started with PID:', systemAudioProc.pid);
@@ -466,24 +442,8 @@ async function startMacOSAudioCapture(geminiSessionRef) {
     const CHUNK_SIZE = SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * CHUNK_DURATION;
 
     let audioBuffer = Buffer.alloc(0);
-    let hasReceivedData = false;
-    let startupTimeout;
-
-    // Set a timeout to check if we're receiving audio data
-    startupTimeout = setTimeout(() => {
-        if (!hasReceivedData && systemAudioProc) {
-            console.warn('SystemAudioDump started but no audio data received after 3 seconds. This might indicate a permission issue.');
-            console.warn('Please check: System Preferences > Security & Privacy > Privacy > Screen Recording');
-            console.warn('Make sure your application (or Electron) has Screen Recording permission enabled.');
-        }
-    }, 3000);
 
     systemAudioProc.stdout.on('data', data => {
-        if (!hasReceivedData && data.length > 0) {
-            hasReceivedData = true;
-            clearTimeout(startupTimeout);
-            console.log('✓ SystemAudioDump is receiving audio data');
-        }
         audioBuffer = Buffer.concat([audioBuffer, data]);
 
         while (audioBuffer.length >= CHUNK_SIZE) {
@@ -507,46 +467,17 @@ async function startMacOSAudioCapture(geminiSessionRef) {
     });
 
     systemAudioProc.stderr.on('data', data => {
-        const errorOutput = data.toString();
-        console.error('SystemAudioDump stderr:', errorOutput);
-        
-        // Check for common permission-related errors
-        if (errorOutput.includes('permission') || errorOutput.includes('denied') || errorOutput.includes('ScreenCaptureKit')) {
-            const permissionError = 'SystemAudioDump requires Screen Recording permission. Go to System Preferences > Security & Privacy > Privacy > Screen Recording and enable it for your application.';
-            console.error(permissionError);
-            if (systemAudioProc) {
-                systemAudioProc.kill();
-                systemAudioProc = null;
-            }
-            throw new Error(permissionError);
-        }
+        console.error('SystemAudioDump stderr:', data.toString());
     });
 
     systemAudioProc.on('close', code => {
-        clearTimeout(startupTimeout);
         console.log('SystemAudioDump process closed with code:', code);
-        
-        if (code !== 0 && code !== null) {
-            console.error(`SystemAudioDump exited with error code: ${code}. This might indicate a permission issue.`);
-            console.error('Please check Screen Recording permissions in System Preferences.');
-        }
-        
         systemAudioProc = null;
-        hasReceivedData = false;
     });
 
     systemAudioProc.on('error', err => {
-        clearTimeout(startupTimeout);
         console.error('SystemAudioDump process error:', err);
-        
-        if (err.code === 'ENOENT') {
-            console.error('SystemAudioDump binary not found. Check the file path.');
-        } else if (err.code === 'EACCES') {
-            console.error('SystemAudioDump binary is not executable or permission denied.');
-        }
-        
         systemAudioProc = null;
-        hasReceivedData = false;
     });
 
     return true;
